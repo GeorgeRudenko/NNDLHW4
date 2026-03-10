@@ -392,8 +392,7 @@ async function loadGitHubModel() {
         log('Loading pre-trained model from GitHub...');
         
         // Raw ссылки на файлы модели
-        const modelUrl = 'https://raw.githubusercontent.com/GeorgeRudenko/NNDLHW4/refs/heads/main/trained-model/model.json';
-        
+        const modelUrl = 'https://raw.githubusercontent.com/GeorgeRudenko/NNDLHW4/main/trained-model/model.json';
         // Загружаем модель
         const loadedModel = await tf.loadLayersModel(modelUrl);
         
