@@ -385,53 +385,6 @@ loadModelBtn.addEventListener('click', async () => {
     }
 });
 
-// ========== НОВЫЙ КОД: ЗАГРУЗКА МОДЕЛИ С GITHUB ==========
-// ---------- Load Pre-trained Model from GitHub ----------
-async function loadGitHubModel() {
-    try {
-        log('Loading pre-trained model from GitHub...');
-        
-        // Raw ссылки на файлы модели
-        const modelUrl = 'https://raw.githubusercontent.com/GeorgeRudenko/NNDLHW4/main/trained-model/model.json';
-        // Загружаем модель
-        const loadedModel = await tf.loadLayersModel(modelUrl);
-        
-        if (window.model) {
-            window.model.dispose();
-        }
-        
-        window.model = loadedModel;
-        
-        // Компилируем с теми же параметрами
-        const optimizer = tf.train.adam(0.01);
-        loadedModel.compile({
-            optimizer: optimizer,
-            loss: 'meanSquaredError',
-            metrics: ['mae']
-        });
-        
-        log('✅ Classroom model loaded successfully!');
-        log(`Model params: ${loadedModel.countParams()}`);
-        modelInfo.innerText = `Classroom model loaded: ${loadedModel.countParams()} params`;
-        
-        // Определяем тип pooling из архитектуры
-        const config = loadedModel.toJSON(null, false);
-        let poolingType = 'unknown';
-        if (JSON.stringify(config).includes('MaxPooling2D')) poolingType = 'max';
-        else if (JSON.stringify(config).includes('AveragePooling2D')) poolingType = 'avg';
-        
-        log(`Pooling type: ${poolingType}`);
-        
-    } catch (err) {
-        log(`❌ Error loading model: ${err.message}`);
-        console.error(err);
-    }
-}
-
-// Добавляем обработчик для новой кнопки
-document.getElementById('loadGitHubModelBtn').addEventListener('click', loadGitHubModel);
-// ========== КОНЕЦ НОВОГО КОДА ==========
-
 // ---------- Toggle Visor ----------
 toggleVisorBtn.addEventListener('click', () => tfvis.visor().toggle());
 
