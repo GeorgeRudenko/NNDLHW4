@@ -1,12 +1,11 @@
-// app.js — Denoising Autoencoder with max/avg pooling comparison
+// app.js — Dual-Pooling Denoising Autoencoder (Max vs Avg)
 import { 
     loadTrainFromFiles, loadTestFromFiles, splitTrainVal, 
     getRandomTestBatch, draw28x28ToCanvas, addNoise, calculatePSNR 
 } from './data-loader.js'; 
 
-console.log('========== DEBUG INFO ==========');
+console.log('========== DUAL POOLING AUTOENCODER ==========');
 console.log('Backend:', tf.getBackend());
-console.log('Memory:', tf.memory());
 
 // State
 let trainTensors = null;
@@ -22,7 +21,8 @@ const logDiv = document.getElementById('log');
 const timerSpan = document.getElementById('timerSpan');
 const originalRow = document.getElementById('originalRow');
 const noisyRow = document.getElementById('noisyRow');
-const denoisedRow = document.getElementById('denoisedRow');
+const maxRow = document.getElementById('maxRow');      
+const avgRow = document.getElementById('avgRow');      
 const psnrDisplay = document.getElementById('psnrDisplay');
 const modelInfo = document.getElementById('modelInfo');
 
@@ -37,20 +37,6 @@ const saveModelBtn = document.getElementById('saveModelBtn');
 const loadModelBtn = document.getElementById('loadModelBtn');
 const loadJsonFile = document.getElementById('loadJsonFile');
 const loadBinFile = document.getElementById('loadBinFile');
-
-// Pooling selection
-const poolingRadios = document.getElementsByName('pooling');
-let currentPooling = 'max'; // default
-
-// Listen for pooling changes
-poolingRadios.forEach(radio => {
-    radio.addEventListener('change', (e) => {
-        if (e.target.checked) {
-            currentPooling = e.target.value;
-            log(`Pooling type set to: ${currentPooling}`);
-        }
-    });
-});
 
 // Constants
 const NOISE_FACTOR = 0.25; // 25% noise
@@ -72,118 +58,189 @@ function resetAll() {
     dataStatus.innerText = 'Data cleared.';
     originalRow.innerHTML = '<div style="color:#64748b;">— reset —</div>';
     noisyRow.innerHTML = '';
-    denoisedRow.innerHTML = '';
+    maxRow.innerHTML = '';
+    avgRow.innerHTML = '';    
     psnrDisplay.innerText = 'not evaluated';
     modelInfo.innerText = 'Model: not built';
     log('System reset.');
 }
 
-// ---------- Build Denoising Autoencoder with BatchNormalization ----------
-function buildDenoisingAutoencoder(poolingType = 'max') {
+// ---------- Helper: Create canvas with image ----------
+function createCanvasElement(tensor, label = null) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 84; canvas.height = 84;
+    draw28x28ToCanvas(tensor, canvas, 3);
+    
+    const cellDiv = document.createElement('div');
+    cellDiv.className = 'canvas-cell';
+    cellDiv.appendChild(canvas);
+    
+    if (label) {
+        const labelDiv = document.createElement('div');
+        labelDiv.className = 'psnr-label';
+        labelDiv.innerText = label;
+        cellDiv.appendChild(labelDiv);
+    }
+    
+    return cellDiv;
+}
+
+// ---------- Build Dual-Pooling Autoencoder ----------
+function buildDualPoolingAutoencoder() {
     tf.dispose(model);
     
     const input = tf.input({ shape: [28, 28, 1] });
     
-    // Encoder with BatchNorm
+    // Shared Encoder
     let x = tf.layers.conv2d({ 
         filters: 32, 
         kernelSize: 3, 
         activation: 'relu', 
         padding: 'same',
-        kernelInitializer: 'heNormal'
+        kernelInitializer: 'heNormal',
+        name: 'shared_conv1'
     }).apply(input);
-    x = tf.layers.batchNormalization().apply(x);
+    x = tf.layers.batchNormalization({ name: 'shared_bn1' }).apply(x);
     
     x = tf.layers.conv2d({ 
         filters: 64, 
         kernelSize: 3, 
         activation: 'relu', 
         padding: 'same',
-        kernelInitializer: 'heNormal'
+        kernelInitializer: 'heNormal',
+        name: 'shared_conv2'
     }).apply(x);
-    x = tf.layers.batchNormalization().apply(x);
+    x = tf.layers.batchNormalization({ name: 'shared_bn2' }).apply(x);
     
-    // Pooling layer (max or average)
-    if (poolingType === 'max') {
-        x = tf.layers.maxPooling2d({ poolSize: 2, padding: 'same' }).apply(x);
-    } else {
-        x = tf.layers.averagePooling2d({ poolSize: 2, padding: 'same' }).apply(x);
-    }
+    const sharedFeatures = x;
     
-    // Bottleneck with BatchNorm
-    x = tf.layers.conv2d({ 
+    // ===== MAX POOLING PATH =====
+    let maxPath = tf.layers.maxPooling2d({ poolSize: 2, padding: 'same', name: 'max_pool' }).apply(sharedFeatures);
+    
+    maxPath = tf.layers.conv2d({ 
         filters: 128, 
         kernelSize: 3, 
         activation: 'relu', 
         padding: 'same',
-        kernelInitializer: 'heNormal'
-    }).apply(x);
-    x = tf.layers.batchNormalization().apply(x);
+        kernelInitializer: 'heNormal',
+        name: 'max_conv1'
+    }).apply(maxPath);
+    maxPath = tf.layers.batchNormalization({ name: 'max_bn1' }).apply(maxPath);
     
-    x = tf.layers.conv2d({ 
+    maxPath = tf.layers.conv2d({ 
         filters: 128, 
         kernelSize: 3, 
         activation: 'relu', 
         padding: 'same',
-        kernelInitializer: 'heNormal'
-    }).apply(x);
-    x = tf.layers.batchNormalization().apply(x);
+        kernelInitializer: 'heNormal',
+        name: 'max_conv2'
+    }).apply(maxPath);
+    maxPath = tf.layers.batchNormalization({ name: 'max_bn2' }).apply(maxPath);
     
-    // Decoder - Upsampling
-    x = tf.layers.upSampling2d({ size: [2, 2] }).apply(x);
+    maxPath = tf.layers.upSampling2d({ size: [2, 2], name: 'max_upsample' }).apply(maxPath);
     
-    x = tf.layers.conv2d({ 
+    maxPath = tf.layers.conv2d({ 
         filters: 64, 
         kernelSize: 3, 
         activation: 'relu', 
         padding: 'same',
-        kernelInitializer: 'heNormal'
-    }).apply(x);
-    x = tf.layers.batchNormalization().apply(x);
+        kernelInitializer: 'heNormal',
+        name: 'max_conv3'
+    }).apply(maxPath);
+    maxPath = tf.layers.batchNormalization({ name: 'max_bn3' }).apply(maxPath);
     
-    x = tf.layers.conv2d({ 
-        filters: 32, 
-        kernelSize: 3, 
-        activation: 'relu', 
-        padding: 'same',
-        kernelInitializer: 'heNormal'
-    }).apply(x);
-    x = tf.layers.batchNormalization().apply(x);
-    
-    // Output layer with sigmoid for [0,1] range
-    const output = tf.layers.conv2d({ 
+    const maxOutput = tf.layers.conv2d({ 
         filters: 1, 
         kernelSize: 3, 
         activation: 'sigmoid', 
         padding: 'same',
-        kernelInitializer: 'glorotNormal'
-    }).apply(x);
+        kernelInitializer: 'glorotNormal',
+        name: 'max_output'
+    }).apply(maxPath);
     
-    model = tf.model({ inputs: input, outputs: output });
+    // ===== AVERAGE POOLING PATH =====
+    let avgPath = tf.layers.averagePooling2d({ poolSize: 2, padding: 'same', name: 'avg_pool' }).apply(sharedFeatures);
+    
+    avgPath = tf.layers.conv2d({ 
+        filters: 128, 
+        kernelSize: 3, 
+        activation: 'relu', 
+        padding: 'same',
+        kernelInitializer: 'heNormal',
+        name: 'avg_conv1'
+    }).apply(avgPath);
+    avgPath = tf.layers.batchNormalization({ name: 'avg_bn1' }).apply(avgPath);
+    
+    avgPath = tf.layers.conv2d({ 
+        filters: 128, 
+        kernelSize: 3, 
+        activation: 'relu', 
+        padding: 'same',
+        kernelInitializer: 'heNormal',
+        name: 'avg_conv2'
+    }).apply(avgPath);
+    avgPath = tf.layers.batchNormalization({ name: 'avg_bn2' }).apply(avgPath);
+    
+    avgPath = tf.layers.upSampling2d({ size: [2, 2], name: 'avg_upsample' }).apply(avgPath);
+    
+    avgPath = tf.layers.conv2d({ 
+        filters: 64, 
+        kernelSize: 3, 
+        activation: 'relu', 
+        padding: 'same',
+        kernelInitializer: 'heNormal',
+        name: 'avg_conv3'
+    }).apply(avgPath);
+    avgPath = tf.layers.batchNormalization({ name: 'avg_bn3' }).apply(avgPath);
+    
+    const avgOutput = tf.layers.conv2d({ 
+        filters: 1, 
+        kernelSize: 3, 
+        activation: 'sigmoid', 
+        padding: 'same',
+        kernelInitializer: 'glorotNormal',
+        name: 'avg_output'
+    }).apply(avgPath);
+    
+    // Create model with two outputs
+    model = tf.model({ 
+        inputs: input, 
+        outputs: [maxOutput, avgOutput] 
+    });
     
     window.model = model;
 
-    // Explicit learning rate for Adam
-    const optimizer = tf.train.adam(0.01);
+    // Compile with losses for both outputs
+    const optimizer = tf.train.adam(0.001);
     
     model.compile({
         optimizer: optimizer,
-        loss: 'meanSquaredError',
-        metrics: ['mae']
+        loss: {
+            max_output: 'meanSquaredError',
+            avg_output: 'meanSquaredError'
+        },
+        metrics: {
+            max_output: ['mae'],
+            avg_output: ['mae']
+        },
+        loss_weights: {
+            max_output: 0.5,
+            avg_output: 0.5
+        }
     });
 
     model.summary();
-    console.log('Model output shape:', model.outputShape);
+    console.log('Model outputs:', model.outputNames);
 
-    log(`Denoising autoencoder built with ${poolingType} pooling and BatchNormalization.`);
-    model.summary(null, null, (msg) => log(msg));
-    modelInfo.innerText = `Denoiser (${poolingType} pool + BN): ${model.countParams()} params`;
+    log('🚀 DUAL-POOLING AUTOENCODER BUILT');
+    log(`Total params: ${model.countParams()}`);
+    modelInfo.innerText = `Dual-Pooling Model: ${model.countParams()} params`;
 }
 
 // ---------- Train Denoiser ----------
 trainBtn.addEventListener('click', async () => {
     if (!model) {
-        buildDenoisingAutoencoder(currentPooling);
+        buildDualPoolingAutoencoder();
     }
     if (!valSplit.trainXs) {
         alert('Load data first.');
@@ -193,36 +250,46 @@ trainBtn.addEventListener('click', async () => {
     try {
         log('Preparing noisy training data...');
         
-        // Create noisy versions of training and validation images
         const trainClean = valSplit.trainXs;
         const valClean = valSplit.valXs;
         
-        // Add noise
         const trainNoisy = addNoise(trainClean, NOISE_FACTOR);
         const valNoisy = addNoise(valClean, NOISE_FACTOR);
         
-        log('Starting denoiser training...');
+        log('Starting dual-pooling training...');
         const start = performance.now();
         
-        const container = { name: 'Denoising Training', tab: 'Training' };
-        const metrics = ['loss', 'val_loss', 'mae', 'val_mae'];
+        const container = { name: 'Dual-Pooling Training', tab: 'Training' };
+        const metrics = ['loss', 'val_loss'];
         const callbacks = tfvis.show.fitCallbacks(container, metrics, { zoomToFit: true });
         
-        const history = await model.fit(trainNoisy, trainClean, {
-            batchSize: 128,
+        // Train with two outputs
+        const history = await model.fit(trainNoisy, {
+            max_output: trainClean,
+            avg_output: trainClean
+        }, {
+            batchSize: 64,
             epochs: 15,
-            validationData: [valNoisy, valClean],
+            validationData: [valNoisy, {
+                max_output: valClean,
+                avg_output: valClean
+            }],
             shuffle: true,
-            callbacks: callbacks,
+            callbacks: {
+                ...callbacks,
+                onEpochEnd: async (epoch, logs) => {
+                    tf.dispose();
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    log(`Epoch ${epoch+1}/15 - loss: ${logs.loss.toFixed(4)}`);
+                }
+            },
             verbose: 0
         });
         
         const duration = ((performance.now() - start)/1000).toFixed(2);
-        const lastLoss = history.history.val_loss[history.history.val_loss.length-1];
-        log(`✅ Denoiser trained in ${duration}s. Final val loss: ${lastLoss.toFixed(4)}`);
+        log(`✅ Training complete in ${duration}s!`);
         timerSpan.innerText = `⏱️ ${duration}s`;
         
-        // Clean up
         tf.dispose([trainNoisy, valNoisy]);
         
     } catch (err) {
@@ -230,7 +297,7 @@ trainBtn.addEventListener('click', async () => {
     }
 });
 
-// ---------- Test Denoising on 5 Random Images ----------
+// ---------- Test Denoising with Both Pooling Types ----------
 testFiveBtn.addEventListener('click', async () => {
     if (!model || !testTensors) {
         alert('Load model and test data first.');
@@ -238,69 +305,95 @@ testFiveBtn.addEventListener('click', async () => {
     }
     
     try {
-        // Get 5 random clean images
-        const { xs: cleanBatch, indices } = getRandomTestBatch(testTensors.xs, 5);
-        
-        // Create noisy versions
+        const { xs: cleanBatch } = getRandomTestBatch(testTensors.xs, 5);
         const noisyBatch = addNoise(cleanBatch, NOISE_FACTOR);
         
-        // Run denoising
-        const denoisedBatch = model.predict(noisyBatch);
+        // Get both outputs
+        const [maxDenoised, avgDenoised] = model.predict(noisyBatch);
         
-        // Clear previous results
+        // Clear previous results - ИСПРАВЛЕНО!
         originalRow.innerHTML = '';
         noisyRow.innerHTML = '';
-        denoisedRow.innerHTML = '';
+        maxRow.innerHTML = '';
+        avgRow.innerHTML = '';
         
-        let totalPSNR = 0;
+        // Create headers
+        const originalHeader = document.createElement('div');
+        originalHeader.className = 'row-label';
+        originalHeader.innerText = '📌 Original images:';
+        originalRow.appendChild(originalHeader);
+
+        const noisyHeader = document.createElement('div');
+        noisyHeader.className = 'row-label';
+        noisyHeader.innerText = '🌫️ Noisy input:';
+        noisyRow.appendChild(noisyHeader);
+
+        const maxHeader = document.createElement('div');
+        maxHeader.className = 'row-label';
+        maxHeader.innerText = '🔷 Max Pooling Results:';
+        maxRow.appendChild(maxHeader);                 
+
+        const avgHeader = document.createElement('div');
+        avgHeader.className = 'row-label';
+        avgHeader.innerText = '🔶 Average Pooling Results:';
+        avgRow.appendChild(avgHeader);                 
         
-        // Display each image
+        // Create rows for images
+        const originalRowDiv = document.createElement('div');
+        originalRowDiv.className = 'canvas-row';
+        originalRow.appendChild(originalRowDiv);
+        
+        const noisyRowDiv = document.createElement('div');
+        noisyRowDiv.className = 'canvas-row';
+        noisyRow.appendChild(noisyRowDiv);
+        
+        const maxRowDiv = document.createElement('div');
+        maxRowDiv.className = 'canvas-row';
+        maxRow.appendChild(maxRowDiv);                  
+
+        const avgRowDiv = document.createElement('div');
+        avgRowDiv.className = 'canvas-row';
+        avgRow.appendChild(avgRowDiv);                  
+        
+        let totalPSNRMax = 0, totalPSNRAvg = 0;
+        
         for (let i = 0; i < 5; i++) {
-            // Extract individual images
             const cleanImg = cleanBatch.slice([i,0,0,0], [1,28,28,1]).squeeze();
             const noisyImg = noisyBatch.slice([i,0,0,0], [1,28,28,1]).squeeze();
-            const denoisedImg = denoisedBatch.slice([i,0,0,0], [1,28,28,1]).squeeze();
+            const maxImg = maxDenoised.slice([i,0,0,0], [1,28,28,1]).squeeze();
+            const avgImg = avgDenoised.slice([i,0,0,0], [1,28,28,1]).squeeze();
             
-            // Calculate PSNR
-            const psnr = calculatePSNR(cleanImg, denoisedImg);
-            totalPSNR += psnr;
+            const psnrMax = calculatePSNR(cleanImg, maxImg);
+            const psnrAvg = calculatePSNR(cleanImg, avgImg);
+            totalPSNRMax += psnrMax;
+            totalPSNRAvg += psnrAvg;
             
-            // Create canvas elements
-            const createCanvas = (tensor, container) => {
-                const canvas = document.createElement('canvas');
-                canvas.width = 84; canvas.height = 84;
-                draw28x28ToCanvas(tensor, canvas, 3);
-                
-                const cellDiv = document.createElement('div');
-                cellDiv.className = 'canvas-cell';
-                cellDiv.appendChild(canvas);
-                
-                // Add PSNR label for denoised images
-                if (container === denoisedRow) {
-                    const psnrDiv = document.createElement('div');
-                    psnrDiv.className = 'psnr-label';
-                    psnrDiv.innerText = `PSNR: ${psnr.toFixed(1)}dB`;
-                    cellDiv.appendChild(psnrDiv);
-                }
-                
-                container.appendChild(cellDiv);
-            };
+            originalRowDiv.appendChild(createCanvasElement(cleanImg));
+            noisyRowDiv.appendChild(createCanvasElement(noisyImg));
             
-            createCanvas(cleanImg, originalRow);
-            createCanvas(noisyImg, noisyRow);
-            createCanvas(denoisedImg, denoisedRow);
+            const maxCell = createCanvasElement(maxImg, `Max: ${psnrMax.toFixed(1)}dB`);
+            maxRowDiv.appendChild(maxCell);
             
-            tf.dispose([cleanImg, noisyImg, denoisedImg]);
+            const avgCell = createCanvasElement(avgImg, `Avg: ${psnrAvg.toFixed(1)}dB`);
+            avgRowDiv.appendChild(avgCell);
+            
+            tf.dispose([cleanImg, noisyImg, maxImg, avgImg]);
         }
         
-        const avgPSNR = totalPSNR / 5;
-        psnrDisplay.innerText = `Average PSNR: ${avgPSNR.toFixed(2)} dB (${currentPooling} pooling)`;
-        log(`Average PSNR on 5 test images: ${avgPSNR.toFixed(2)} dB`);
+        const avgPSNRMax = (totalPSNRMax/5).toFixed(2);
+        const avgPSNRAvg = (totalPSNRAvg/5).toFixed(2);
         
-        tf.dispose([cleanBatch, noisyBatch, denoisedBatch]);
+        psnrDisplay.innerHTML = `
+            Max Pooling: ${avgPSNRMax} dB | 
+            Average Pooling: ${avgPSNRAvg} dB
+        `;
+        
+        log(`📊 Max PSNR: ${avgPSNRMax} dB | Avg PSNR: ${avgPSNRAvg} dB`);
+        
+        tf.dispose([cleanBatch, noisyBatch, maxDenoised, avgDenoised]);
         
     } catch (err) {
-        log(`Denoising test error: ${err.message}`);
+        log(`Test error: ${err.message}`);
     }
 });
 
@@ -326,25 +419,21 @@ loadDataBtn.addEventListener('click', async () => {
 
         dataStatus.innerHTML = `✅ Train: ${trainTensors.xs.shape[0]} | Test: ${testTensors.xs.shape[0]} | Val: ${split.valXs.shape[0]}`;
 
-        // Auto-build model if none exists
-        if (!model) buildDenoisingAutoencoder(currentPooling);
+        if (!model) buildDualPoolingAutoencoder();
     } catch (err) {
         log(`Error loading data: ${err.message}`);
-        console.error(err);
     }
 });
 
 // ---------- Build Model Button ----------
-buildModelBtn.addEventListener('click', () => {
-    buildDenoisingAutoencoder(currentPooling);
-});
+buildModelBtn.addEventListener('click', buildDualPoolingAutoencoder);
 
 // ---------- Save Model ----------
 saveModelBtn.addEventListener('click', async () => {
     if (!model) { alert('No model to save'); return; }
     try {
-        await model.save('downloads://denoising-autoencoder');
-        log('Denoiser model download initiated.');
+        await model.save('downloads://dual-pooling-autoencoder');
+        log('Dual-pooling model download initiated.');
     } catch (err) {
         log(`Save error: ${err.message}`);
     }
@@ -363,25 +452,27 @@ loadModelBtn.addEventListener('click', async () => {
         if (model) model.dispose();
         model = loadedModel;
         
-        // Recompile with explicit optimizer
-        const optimizer = tf.train.adam(0.01);
-        model.compile({ 
-            optimizer: optimizer, 
-            loss: 'meanSquaredError', 
-            metrics: ['mae'] 
+        const optimizer = tf.train.adam(0.001);
+        model.compile({
+            optimizer: optimizer,
+            loss: {
+                max_output: 'meanSquaredError',
+                avg_output: 'meanSquaredError'
+            },
+            metrics: {
+                max_output: ['mae'],
+                avg_output: ['mae']
+            },
+            loss_weights: {
+                max_output: 0.5,
+                avg_output: 0.5
+            }
         });
         
-        log('Denoiser model loaded from files. Re-compiled with Adam(0.01).');
-        
-        // Try to infer pooling type from architecture (simple heuristic)
-        const config = model.toJSON(null, false);
-        let poolingType = 'unknown';
-        if (JSON.stringify(config).includes('MaxPooling2D')) poolingType = 'max';
-        else if (JSON.stringify(config).includes('AveragePooling2D')) poolingType = 'avg';
-        
-        modelInfo.innerText = `Denoiser loaded (${poolingType} pool): ${model.countParams()} params`;
+        log('✅ Dual-pooling model loaded!');
+        modelInfo.innerText = `Dual model loaded: ${model.countParams()} params`;
     } catch (err) {
-        log(`Load model error: ${err.message}`);
+        log(`Load error: ${err.message}`);
     }
 });
 
@@ -392,5 +483,5 @@ toggleVisorBtn.addEventListener('click', () => tfvis.visor().toggle());
 resetBtn.addEventListener('click', resetAll);
 
 // Initial setup
-buildDenoisingAutoencoder('max');
-log('Denoising Autoencoder ready. Load MNIST data and start training!');
+buildDualPoolingAutoencoder();
+log('✨ Dual-Pooling Autoencoder ready!');
